@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#050816" />
+  <meta name="description" content="Gửi những cô gái tuyệt vời của CLB Bóng chuyền PYU: một vũ trụ lời chúc nhân ngày 20/10." />
+  <meta property="og:title" content="PYU Volleyball Club — Cosmic 20/10" />
+  <meta property="og:description" content="Khám phá vũ trụ lời chúc dành tặng các cô gái PYU nhân ngày Phụ nữ Việt Nam 20/10." />
+  <meta property="og:type" content="website" />
+  <title>PYU Volleyball Club — Cosmic 20/10</title>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+
+  <!-- Bản dự phòng khi không có WebGL -->
+  <section id="fallback" hidden aria-label="Danh sách lời chúc">
+    <h2>Những lời chúc dành cho các cô gái PYU</h2>
+    <div id="fallbackGrid"></div>
+  </section>
+
+  <header class="hud" id="hud" hidden>
+    <strong class="logo">PYU VOLLEYBALL CLUB</strong>
+    <p>Chạm vào các hành tinh phát sáng nha</p>
+  </header>
+  <div id="tooltip" hidden></div>
+
+  <section id="intro" aria-labelledby="introTitle">
+    <p class="i-date">20 THÁNG 10</p>
+    <h1 id="introTitle" class="i-title">CHÚC MỪNG NGÀY PHỤ NỮ VIỆT NAM</h1>
+    <p class="i-club">PYU VOLLEYBALL CLUB</p>
+    <p class="i-sub">Dành tặng lời chúc này cho các cô gái trong CLB nhé ! ahihi.</p>
+    <button id="introStart" class="cta" type="button">KHÁM PHÁ VŨ TRỤ LỜI CHÚC</button>
+  </section>
+
+  <aside id="panel" hidden role="dialog" aria-labelledby="panelTitle">
+    <button id="panelClose" class="ib" type="button" aria-label="Đóng lời chúc">✕</button>
+    <p id="panelKind" class="pw kind"></p>
+    <h2 id="panelTitle" class="pw"></h2>
+    <p id="panelWish" class="pw wish"></p>
+    <p id="panelMsg" class="pw msg"></p>
+    <p id="panelWho" class="pw who" hidden></p>
+  </aside>
+
+  <nav id="dock" class="dock" hidden aria-label="Điều khiển">
+    <button id="autoBtn" class="ib" data-3d type="button" aria-pressed="true" aria-label="Bật/tắt tự xoay" title="Tự xoay">⟳</button>
+    <button id="playBtn" class="ib" type="button" aria-label="Phát nhạc" title="Phát/Tạm dừng">▶</button>
+    <button id="muteBtn" class="ib" type="button" aria-label="Tắt tiếng" title="Tắt/bật tiếng">🔊</button>
+    <input id="vol" type="range" min="0" max="100" value="60" aria-label="Âm lượng" />
+    <button id="helpBtn" class="ib" type="button" aria-label="Hướng dẫn" title="Hướng dẫn">?</button>
+    <button id="restartBtn" class="ib" type="button" aria-label="Về màn hình mở đầu" title="Về màn hình mở đầu">↺</button>
+    <p id="musicStatus" class="status" role="status" aria-live="polite">Chưa phát nhạc</p>
+  </nav>
+
+  <div id="help" class="help" hidden role="dialog" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Hướng dẫn</h2>
+    <p>Kéo chuột hoặc vuốt để xoay vũ trụ 360°. Cuộn chuột hoặc chụm hai ngón để phóng to, thu nhỏ.</p>
+    <p>Chạm vào một hành tinh hoặc ngôi sao để đọc lời chúc. Nút ⟳ bật/tắt tự xoay, nút ▶ bật/tắt nhạc nền.</p>
+    <button id="helpClose" class="cta small" type="button">Đã hiểu</button>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
