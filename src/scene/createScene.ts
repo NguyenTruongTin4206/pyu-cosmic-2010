@@ -4,19 +4,34 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import type { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { disposeTree } from './textures';
 import { isInApp, isLowEnd } from '../utils';
+import { TIERS, clampTier, saveTierFloor } from './quality';
+
+export interface SceneStats { fps: number; pixelRatio: number; bloom: boolean; tier: number; contextLosses: number }
+export interface TierOptions { persist?: boolean; reason?: 'auto' | 'manual' | 'context' }
 
 export interface SceneKit {
-  renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; controls: OrbitControls; low: boolean;
-  onFrame: (cb: (t: number, dt: number) => void) => void; start: () => void; stop: () => void; dispose: () => void;
+  renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; controls: OrbitControls;
+  readonly tier: number;
+  setTier: (t: number, o?: TierOptions) => void;
+  onTier: (cb: (tier: number, reason: string) => void) => void;
+  onContext: (cb: (state: 'lost' | 'restored') => void) => void;
+  onFatal: (cb: () => void) => void;
+  onFrame: (cb: (t: number, dt: number) => void) => void;
+  stats: () => SceneStats;
+  start: () => void; stop: () => void; dispose: () => void;
 }
 
-export function createScene(canvas: HTMLCanvasElement): SceneKit {
-  // Máy yếu / điện thoại / Zalo: giảm pixel ratio, bỏ khử răng cưa, tắt bloom, giảm số hạt
-  const low = isLowEnd();
-  let maxPR = isInApp() ? 1 : Math.min(window.devicePixelRatio, low ? 1.25 : 2);
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: !low, powerPreference: low ? 'default' : 'high-performance' });
+export function createScene(canvas: HTMLCanvasElement, startTier: number): SceneKit {
+  let tier = clampTier(startTier);
+  const cfg = (): (typeof TIERS)[number] => TIERS[tier];
+
+  const renderer = new THREE.WebGLRenderer({
+    canvas, antialias: tier <= 1 && !isLowEnd(), stencil: false,
+    powerPreference: tier === 0 ? 'high-performance' : 'default',
+  });
   renderer.setClearColor(0x050816, 1);
 
   const scene = new THREE.Scene();
@@ -25,60 +40,127 @@ export function createScene(canvas: HTMLCanvasElement): SceneKit {
   scene.add(new THREE.AmbientLight(0x8a7cff, 0.55));
   const sun = new THREE.DirectionalLight(0xfff2dd, 2.4); sun.position.set(30, 25, 40); scene.add(sun);
 
-  // Hiệu ứng bloom (ánh sáng lan tỏa) - chỉ bật trên máy đủ mạnh, và tự tắt nếu thấy giật
-  let composer: EffectComposer | null = null, bloom: UnrealBloomPass | null = null;
-  if (!low) {
-    try {
-      composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
-      composer.addPass(new RenderPass(scene, camera));
-      bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.7, 0.82);
-      composer.addPass(bloom); composer.addPass(new OutputPass());
-    } catch (e) { console.warn('Không bật được bloom:', e); composer = null; bloom = null; }
-  }
-
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true; controls.dampingFactor = 0.06; controls.enablePan = false;
   controls.rotateSpeed = 0.6; controls.zoomSpeed = 0.7; controls.minDistance = 16; controls.maxDistance = 95;
   controls.minPolarAngle = 0.15; controls.maxPolarAngle = Math.PI - 0.15; // azimuth không giới hạn -> xoay đủ 360°
   controls.autoRotate = !window.matchMedia('(prefers-reduced-motion: reduce)').matches; controls.autoRotateSpeed = 0.5;
 
-  function resize(): void {
-    const w = window.innerWidth, h = window.innerHeight;
-    renderer.setPixelRatio(maxPR); renderer.setSize(w, h, false);
-    composer?.setPixelRatio(maxPR); composer?.setSize(w, h);
-    camera.aspect = w / h; camera.fov = w / h < 1 ? 70 : 55; camera.updateProjectionMatrix();
-  }
-  resize();
-  window.addEventListener('resize', resize); window.addEventListener('orientationchange', resize);
-  window.visualViewport?.addEventListener('resize', resize); // thanh địa chỉ/toolbar của Zalo, Chrome mobile co giãn
-
-  const cbs: ((t: number, dt: number) => void)[] = [];
-  const clock = new THREE.Clock(); let raf = 0, t = 0, wantRun = false, frames = 0, acc = 0;
-  function frame(): void {
-    raf = requestAnimationFrame(frame);
-    const dt = Math.min(clock.getDelta(), 0.05); t += dt; frames++;
-    cbs.forEach((cb) => cb(t, dt)); controls.update();
-    if (composer) composer.render(dt); else renderer.render(scene, camera);
-    // Đo FPS ~3 giây đầu: nếu dưới ~28 FPS thì tắt bloom và hạ độ phân giải
-    if (frames > 60 && frames <= 240) acc += dt;
-    if (frames === 240 && acc / 180 > 0.036) {
-      if (composer) { composer.dispose(); bloom?.dispose(); composer = null; bloom = null; }
-      maxPR = 1; resize();
+  // ---- Bloom (ánh sáng lan tỏa): chỉ bật ở mức "Cao", bật/tắt được lúc đang chạy ----
+  let composer: EffectComposer | null = null, passes: Pass[] = [];
+  function setBloom(on: boolean): void {
+    if (on === (composer !== null)) return;
+    if (on) {
+      try {
+        const c = new EffectComposer(renderer);
+        const list: Pass[] = [new RenderPass(scene, camera), new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.7, 0.82), new OutputPass()];
+        list.forEach((p) => c.addPass(p));
+        composer = c; passes = list; lastW = 0; // buộc áp dụng lại kích thước
+      } catch (e) { console.warn('Không bật được bloom:', e); composer = null; passes = []; }
+    } else {
+      passes.forEach((p) => p.dispose()); composer?.dispose(); composer = null; passes = [];
+      renderer.setRenderTarget(null);
     }
   }
-  function start(): void { wantRun = true; if (!raf && !document.hidden) { clock.getDelta(); frame(); } }
+
+  // ---- Kích thước: chỉ áp dụng khi THỰC SỰ đổi, và làm ngay trong khung hình để không bị chớp đen ----
+  let sizeDirty = true, lastW = 0, lastH = 0, lastPR = 0;
+  function applySize(): void {
+    sizeDirty = false;
+    const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight), c = cfg();
+    let pr = Math.min(window.devicePixelRatio || 1, c.maxPR, Math.sqrt(c.pixels / (w * h)));
+    if (isInApp()) pr = Math.min(pr, 1);
+    pr = Math.max(0.5, Math.round(pr * 100) / 100);
+    if (w === lastW && h === lastH && pr === lastPR) return;
+    lastW = w; lastH = h; lastPR = pr; govWarm = Math.max(govWarm, 20);
+    renderer.setPixelRatio(pr); renderer.setSize(w, h, false);
+    composer?.setPixelRatio(pr); composer?.setSize(w, h);
+    camera.aspect = w / h; camera.fov = w / h < 1 ? 70 : 55; camera.updateProjectionMatrix();
+  }
+  const markDirty = (): void => { sizeDirty = true; };
+  window.addEventListener('resize', markDirty); window.addEventListener('orientationchange', markDirty);
+  window.visualViewport?.addEventListener('resize', markDirty); // thanh địa chỉ/toolbar của Zalo, Chrome mobile co giãn
+
+  // ---- Đổi mức chất lượng ----
+  const tierCbs: ((t: number, r: string) => void)[] = [];
+  function setTier(t: number, o: TierOptions = {}): void {
+    const next = clampTier(t);
+    if (next === tier) return;
+    tier = next; setBloom(cfg().bloom); sizeDirty = true; lastW = 0;
+    if (o.persist) saveTierFloor(tier);
+    tierCbs.forEach((cb) => cb(tier, o.reason ?? 'manual'));
+  }
+  setBloom(cfg().bloom);
+
+  // ---- Vòng lặp vẽ + tự giảm chất lượng nếu thấy giật (đo liên tục, chỉ giảm, không tăng lại để tránh chớp) ----
+  const cbs: ((t: number, dt: number) => void)[] = [], fatalCbs: (() => void)[] = [];
+  let raf = 0, t = 0, last = 0, wantRun = false, errors = 0, fps = 60, losses = 0;
+  let govFrames = 0, govAcc = 0, govBad = 0, govWarm = 45;
+  const resetGov = (): void => { govFrames = 0; govAcc = 0; govBad = 0; govWarm = 45; };
+
+  function govern(rawDt: number): void {
+    if (govWarm > 0) { govWarm--; return; }
+    if (rawDt > 0.25) return; // bỏ các khung bị ngắt quãng (đổi tab, kéo cửa sổ)
+    govAcc += rawDt; govFrames++;
+    if (govFrames < 120) return;
+    const avg = govAcc / govFrames; fps = 1 / avg; govFrames = 0; govAcc = 0;
+    govBad = avg > 0.04 ? govBad + 1 : 0; // dưới ~25 FPS liên tục ~8 giây
+    if (govBad >= 2 && tier < TIERS.length - 1) { resetGov(); setTier(tier + 1, { persist: true, reason: 'auto' }); }
+  }
+
+  function frame(): void {
+    raf = requestAnimationFrame(frame);
+    try {
+      const now = performance.now(), rawDt = (now - last) / 1000; last = now;
+      const dt = Math.min(rawDt, 0.05); t += dt;
+      if (sizeDirty) applySize();
+      cbs.forEach((cb) => cb(t, dt)); controls.update();
+      if (composer) composer.render(dt); else renderer.render(scene, camera);
+      govern(rawDt); errors = 0;
+    } catch (e) {
+      console.error('Lỗi khi vẽ khung hình:', e);
+      if (++errors >= 5) { stop(); fatalCbs.forEach((cb) => cb()); }
+    }
+  }
+  function run(): void { if (wantRun && !raf && !document.hidden && !lostNow) { last = performance.now(); resetGov(); frame(); } }
+  function start(): void { wantRun = true; run(); }
   function stop(): void { wantRun = false; cancelAnimationFrame(raf); raf = 0; }
-  const onVis = (): void => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; } else if (wantRun && !raf) { clock.getDelta(); frame(); } };
+  const onVis = (): void => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; } else run(); };
   document.addEventListener('visibilitychange', onVis); // tạm dừng khi mất tiêu điểm tab
 
+  // ---- Mất / khôi phục WebGL: không bỏ cuộc ngay, khôi phục rồi hạ chất lượng để lần sau không bị lại ----
+  let lostNow = false;
+  const ctxCbs: ((s: 'lost' | 'restored') => void)[] = [];
+  const onLost = (e: Event): void => {
+    e.preventDefault(); lostNow = true; losses++; cancelAnimationFrame(raf); raf = 0;
+    ctxCbs.forEach((cb) => cb('lost'));
+  };
+  const onRestored = (): void => {
+    lostNow = false; setBloom(false);
+    const target = Math.max(tier, losses >= 2 ? 2 : 1);
+    if (target !== tier) setTier(target, { persist: true, reason: 'context' }); else saveTierFloor(tier);
+    sizeDirty = true; lastW = 0;
+    ctxCbs.forEach((cb) => cb('restored')); run();
+  };
+  canvas.addEventListener('webglcontextlost', onLost); canvas.addEventListener('webglcontextrestored', onRestored);
+
   return {
-    renderer, scene, camera, controls, low, start, stop,
+    renderer, scene, camera, controls,
+    get tier() { return tier; },
+    setTier,
+    onTier: (cb) => { tierCbs.push(cb); },
+    onContext: (cb) => { ctxCbs.push(cb); },
+    onFatal: (cb) => { fatalCbs.push(cb); },
     onFrame: (cb) => { cbs.push(cb); },
+    stats: () => ({ fps, pixelRatio: lastPR, bloom: composer !== null, tier, contextLosses: losses }),
+    start, stop,
     dispose() {
       stop(); document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('resize', resize); window.removeEventListener('orientationchange', resize);
-      window.visualViewport?.removeEventListener('resize', resize);
-      controls.dispose(); composer?.dispose(); bloom?.dispose(); disposeTree(scene); renderer.dispose();
+      window.removeEventListener('resize', markDirty); window.removeEventListener('orientationchange', markDirty);
+      window.visualViewport?.removeEventListener('resize', markDirty);
+      canvas.removeEventListener('webglcontextlost', onLost); canvas.removeEventListener('webglcontextrestored', onRestored);
+      setBloom(false); controls.dispose(); disposeTree(scene); renderer.dispose();
+      try { renderer.forceContextLoss(); } catch { /* bỏ qua */ } // trả GPU context cho trình duyệt
     },
   };
 }

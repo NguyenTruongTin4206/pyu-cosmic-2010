@@ -13,3 +13,11 @@ export const isLowEnd = (): boolean => {
   const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   return window.matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 4) <= 4 || (mem !== undefined && mem <= 4) || isInApp();
 };
+
+/** localStorage có thể bị chặn (chế độ riêng tư, trình duyệt nhúng) nên luôn bọc try/catch */
+export function safeGet(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+export function safeSet(key: string, value: string): void {
+  try { window.localStorage.setItem(key, value); } catch { /* bỏ qua */ }
+}

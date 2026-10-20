@@ -51,11 +51,12 @@ function orbitLine(r: number): THREE.LineLoop {
   return new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#bfb2ff', transparent: true, opacity: 0.16, depthWrite: false }));
 }
 
-export function createCosmos(low: boolean): Cosmos {
+/** earthSize: độ phân giải ảnh Trái Đất tạo bằng mã (nhỏ hơn = nhẹ và tải nhanh hơn) */
+export function createCosmos(earthSize: number): Cosmos {
   const root = new THREE.Group(), bodies: Body[] = [];
 
   // Trái Đất ở trung tâm (không tương tác): bề mặt, mây, khí quyển và Mặt Trăng đều tạo bằng mã
-  const tex = earthTextures(low ? 512 : 1024);
+  const tex = earthTextures(earthSize);
   const earthG = new THREE.Group(); earthG.rotation.z = 0.41; // nghiêng trục 23,4°
   const earth = new THREE.Mesh(new THREE.SphereGeometry(5, 64, 48), new THREE.MeshStandardMaterial({ map: tex.map, roughness: 0.9 }));
   const clouds = new THREE.Mesh(new THREE.SphereGeometry(5.08, 48, 36), new THREE.MeshStandardMaterial({ map: tex.clouds, transparent: true, depthWrite: false, roughness: 1 }));

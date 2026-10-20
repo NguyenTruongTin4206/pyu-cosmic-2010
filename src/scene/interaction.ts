@@ -74,15 +74,16 @@ export function createInteraction(o: Opts): Interaction {
   };
   const onMove = (e: PointerEvent): void => { if (active && e.pointerType === 'mouse' && e.buttons === 0) setHover(pick(e.clientX, e.clientY), e.clientX, e.clientY); };
   const onLeave = (): void => setHover(null);
+  const onCancel = (): void => { down = null; }; // hệ thống ngắt thao tác chạm (cuộc gọi, vuốt cạnh màn hình...)
 
   o.canvas.addEventListener('pointerdown', onDown); o.canvas.addEventListener('pointerup', onUp);
-  o.canvas.addEventListener('pointermove', onMove); o.canvas.addEventListener('pointerleave', onLeave);
+  o.canvas.addEventListener('pointermove', onMove); o.canvas.addEventListener('pointerleave', onLeave); o.canvas.addEventListener('pointercancel', onCancel);
 
   return {
     select, setActive(on) { active = on; if (!on) setHover(null); },
     dispose() {
       o.canvas.removeEventListener('pointerdown', onDown); o.canvas.removeEventListener('pointerup', onUp);
-      o.canvas.removeEventListener('pointermove', onMove); o.canvas.removeEventListener('pointerleave', onLeave);
+      o.canvas.removeEventListener('pointermove', onMove); o.canvas.removeEventListener('pointerleave', onLeave); o.canvas.removeEventListener('pointercancel', onCancel);
       gsap.killTweensOf(o.controls.target);
     },
   };

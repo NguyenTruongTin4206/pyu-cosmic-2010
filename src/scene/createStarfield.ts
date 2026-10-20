@@ -7,7 +7,7 @@ const rand = (a: number, b: number): number => a + Math.random() * (b - a);
 const gauss = (): number => (Math.random() + Math.random() + Math.random() - 1.5) / 0.5; // xấp xỉ phân phối chuẩn
 const ADD = THREE.AdditiveBlending;
 
-export interface Starfield { group: THREE.Group; update: (t: number, dt: number) => void; dispose: () => void }
+export interface Starfield { group: THREE.Group; update: (t: number, dt: number) => void; setLevel: (tier: number) => void; dispose: () => void }
 
 function shell(n: number, r0: number, r1: number): THREE.BufferGeometry {
   const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
@@ -26,7 +26,7 @@ function pts(geo: THREE.BufferGeometry, size: number, opacity: number): THREE.Po
 }
 
 /** Dải ngân hà: vòng sao dày, nghiêng, có vệt sáng/tối và quầng mây mờ */
-function band(n: number, tx: number, tz: number, tints: string[], seed: number): { tilt: THREE.Group; spin: THREE.Group } {
+function band(n: number, tx: number, tz: number, tints: string[], seed: number): { tilt: THREE.Group; spin: THREE.Group; clouds: THREE.Sprite[] } {
   const tilt = new THREE.Group(), spin = new THREE.Group(); tilt.rotation.set(tx, 0, tz); tilt.add(spin);
   const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), cs = tints.map((c) => new THREE.Color(c));
   for (let i = 0; i < n;) {
@@ -38,11 +38,12 @@ function band(n: number, tx: number, tz: number, tints: string[], seed: number):
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   spin.add(pts(g, 3.2, 0.8));
+  const clouds: THREE.Sprite[] = [];
   for (let j = 0; j < 14; j++) {
     const a = (j / 14) * Math.PI * 2, m = new THREE.SpriteMaterial({ map: cloudTexture(seed + (j % 3)), color: cs[j % cs.length], transparent: true, opacity: 0.14, depthWrite: false, blending: ADD });
-    m.rotation = rand(0, 6.28); const s = new THREE.Sprite(m); s.position.set(Math.cos(a) * 450, 0, Math.sin(a) * 450); s.scale.set(230, 230, 1); spin.add(s);
+    m.rotation = rand(0, 6.28); const s = new THREE.Sprite(m); s.position.set(Math.cos(a) * 450, 0, Math.sin(a) * 450); s.scale.set(230, 230, 1); spin.add(s); clouds.push(s);
   }
-  return { tilt, spin };
+  return { tilt, spin, clouds };
 }
 
 /** Thiên hà xoắn ốc ở xa */
@@ -64,8 +65,9 @@ function spiral(n: number, R: number, core: string, edge: string, p: [number, nu
 interface Meteor { pts: THREE.Points; pos: THREE.BufferAttribute; col: THREE.BufferAttribute; active: boolean; t: number; life: number; head: THREE.Vector3; vel: THREE.Vector3; tint: THREE.Color }
 const MN = 18;
 
-export function createStarfield(low: boolean, camera: THREE.Camera): Starfield {
-  const group = new THREE.Group(), k = low ? 0.5 : 1;
+/** k: hệ số số lượng hạt (1 = đầy đủ, nhỏ hơn = nhẹ hơn) */
+export function createStarfield(k: number, camera: THREE.Camera): Starfield {
+  const group = new THREE.Group();
 
   // 3 lớp sao ở 3 khoảng cách (thị sai), mỗi lớp nhấp nháy theo nhịp riêng
   const specs = [
@@ -99,7 +101,7 @@ export function createStarfield(low: boolean, camera: THREE.Camera): Starfield {
   const nebs = neb.map(([c, x, y, z, s, o, seed]) => {
     const m = new THREE.SpriteMaterial({ map: cloudTexture(seed), color: c, transparent: true, opacity: o, depthWrite: false, blending: ADD, fog: false });
     m.rotation = rand(0, 6.28); const sp = new THREE.Sprite(m); sp.position.set(x, y, z); sp.scale.set(s, s, 1); group.add(sp);
-    return { m, o, sp: rand(0.15, 0.4), ph: rand(0, 6.28), rs: rand(-0.02, 0.02) };
+    return { m, o, spr: sp, sp: rand(0.15, 0.4), ph: rand(0, 6.28), rs: rand(-0.02, 0.02) };
   });
 
   // Sao băng: đầu sáng + đuôi mờ dần, xuất hiện ngẫu nhiên trong tầm nhìn của camera
@@ -133,6 +135,11 @@ export function createStarfield(low: boolean, camera: THREE.Camera): Starfield {
 
   return {
     group,
+    // Mức chất lượng thấp: ẩn bớt các lớp mây/tinh vân khổng lồ (chúng chồng lên nhau, rất tốn GPU)
+    setLevel(tier) {
+      bands.forEach((b) => b.clouds.forEach((s, i) => { s.visible = tier < 2 || i % (tier >= 3 ? 4 : 2) === 0; }));
+      nebs.forEach((n, i) => { n.spr.visible = tier < 2 || i % 3 === 0 || (tier === 2 && i % 3 === 1); });
+    },
     update(t, dt) {
       layers.forEach((l) => { l.p.rotation.y += l.spin * dt; (l.p.material as THREE.PointsMaterial).opacity = l.base + Math.sin(t * l.speed) * 0.12; });
       dust.rotation.y += 0.01 * dt; dust.position.y = Math.sin(t * 0.2) * 2;

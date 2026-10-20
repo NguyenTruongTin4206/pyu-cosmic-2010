@@ -8,7 +8,7 @@ export function setMusicStatus(state: MusicState, msg: string): void {
   b.textContent = on ? '⏸' : '▶'; b.setAttribute('aria-label', on ? 'Tạm dừng nhạc' : 'Phát nhạc');
 }
 
-interface Handlers { music: MusicPlayer; onAutoRotate: (on: boolean) => void; onRestart: () => void }
+interface Handlers { music: MusicPlayer; onAutoRotate: (on: boolean) => void; onRestart: () => void; onQuality: () => void }
 
 export function bindControls(h: Handlers): void {
   const auto = $('autoBtn');
@@ -27,4 +27,5 @@ export function bindControls(h: Handlers): void {
   $('helpClose').addEventListener('click', () => { help.hidden = true; });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') help.hidden = true; });
   $('restartBtn').addEventListener('click', h.onRestart);
+  $('qualityBtn').addEventListener('click', h.onQuality);
 }

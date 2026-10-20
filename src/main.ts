@@ -11,12 +11,16 @@ import { createCosmos } from './scene/createPlanets';
 import type { Cosmos } from './scene/createPlanets';
 import { createInteraction } from './scene/interaction';
 import type { Interaction } from './scene/interaction';
+import { TIERS, pickInitialTier, probeGpu } from './scene/quality';
 import { createIntro } from './components/intro';
 import { createWishPanel } from './components/wishPanel';
 import { createMusicPlayer } from './components/musicPlayer';
 import { bindControls, setMusicStatus } from './components/controls';
+import { hideToast, toast } from './components/toast';
 
-document.body.classList.toggle('lite', isLowEnd()); // máy yếu / Zalo: giao diện nhẹ hơn
+const gpu = probeGpu();
+const startTier = pickInitialTier(gpu);
+document.body.classList.toggle('lite', startTier >= 2 || isLowEnd()); // máy yếu / Zalo: giao diện nhẹ hơn
 const canvas = $<HTMLCanvasElement>('scene');
 let kit: SceneKit | null = null, cosmos: Cosmos | null = null, starfield: Starfield | null = null, interaction: Interaction | null = null;
 let mode: '3d' | 'fallback' = '3d';
@@ -36,19 +40,18 @@ function buildFallback(): void {
 }
 function showFallback(): void { $('fallback').hidden = false; }
 function toFallback(): void {
+  if (mode === 'fallback') return;
   mode = 'fallback'; kit?.stop(); document.body.classList.add('fallback-mode'); buildFallback();
-}
-
-function webglOk(): boolean {
-  try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; }
+  if (document.body.classList.contains('explore')) showFallback();
 }
 
 // ---- Khởi tạo vũ trụ 3D ----
 function init3D(): boolean {
-  if (!webglOk()) return false;
+  if (!gpu.ok) return false;
   try {
-    const k = createScene(canvas), sf = createStarfield(k.low, k.camera), cs = createCosmos(k.low);
-    kit = k; starfield = sf; cosmos = cs;
+    const cfg = TIERS[startTier];
+    const k = createScene(canvas, startTier), sf = createStarfield(cfg.particles, k.camera), cs = createCosmos(cfg.earthTex);
+    kit = k; starfield = sf; cosmos = cs; sf.setLevel(startTier);
     k.scene.add(sf.group, cs.root);
     interaction = createInteraction({ canvas, camera: k.camera, controls: k.controls, scene: k.scene, bodies: cs.bodies, tooltip: $('tooltip'),
       onSelect: (b) => { if (b) panel.open(b.wish); else panel.close(); } });
@@ -61,18 +64,38 @@ function init3D(): boolean {
         if (tmp.length() < min) k.camera.position.copy(b.pos).add(tmp.setLength(min));
       });
     });
-    // Mất WebGL (hay gặp trên điện thoại/Zalo): chờ khôi phục, quá 5 giây mới chuyển sang bản dự phòng
-    let lostTimer = 0;
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault(); k.stop();
-      lostTimer = window.setTimeout(() => { toFallback(); if (document.body.classList.contains('explore')) showFallback(); }, 5000);
+
+    // Tự đổi chất lượng (do thấy giật, hoặc người xem bấm nút)
+    k.onTier((tier, reason) => {
+      sf.setLevel(tier); updateQualityButton(tier);
+      if (reason === 'auto') toast(`Máy hơi chậm nên đã tự giảm chất lượng hình ảnh (${TIERS[tier].name}) để mượt hơn.`, 4500);
+      else if (reason === 'manual') toast(`Chất lượng hình ảnh: ${TIERS[tier].name}`);
     });
-    canvas.addEventListener('webglcontextrestored', () => { window.clearTimeout(lostTimer); k.start(); });
+    updateQualityButton(k.tier);
+
+    // Mất WebGL (hay gặp khi GPU quá tải hoặc trên điện thoại/Zalo): chờ khôi phục, quá 8 giây mới chuyển sang bản dự phòng
+    let lostTimer = 0;
+    k.onContext((state) => {
+      window.clearTimeout(lostTimer);
+      if (state === 'lost') {
+        toast('Đang khôi phục hình ảnh…', 0);
+        lostTimer = window.setTimeout(() => { toFallback(); toast('Thiết bị không hiển thị được 3D nên chuyển sang chế độ danh sách.', 6000); }, 8000);
+      } else toast('Đã khôi phục. Hình ảnh được giảm nhẹ để ổn định hơn.', 4500);
+    });
+    k.onFatal(() => { toFallback(); toast('Hiển thị 3D gặp sự cố nên chuyển sang chế độ danh sách.', 6000); });
+
     k.controls.enabled = false; k.start();
     return true;
   } catch (err) {
-    console.error('Không khởi tạo được WebGL:', err); kit?.dispose(); kit = null; return false;
+    console.error('Không khởi tạo được WebGL:', err);
+    interaction?.dispose(); starfield?.dispose(); cosmos?.dispose(); kit?.dispose();
+    kit = null; starfield = null; cosmos = null; interaction = null; return false;
   }
+}
+
+function updateQualityButton(tier: number): void {
+  const b = $('qualityBtn'), name = TIERS[tier].name;
+  b.title = `Chất lượng hình ảnh: ${name} (bấm để đổi)`; b.setAttribute('aria-label', `Chất lượng hình ảnh: ${name}. Bấm để đổi`);
 }
 
 // ---- Luồng: màn hình mở đầu -> khám phá ----
@@ -103,6 +126,25 @@ function restart(): void {
 
 if (!init3D()) toFallback();
 const intro = createIntro(enter);
-bindControls({ music, onAutoRotate: (on) => { if (kit) kit.controls.autoRotate = on; }, onRestart: restart });
+bindControls({
+  music, onRestart: restart,
+  onAutoRotate: (on) => { if (kit) kit.controls.autoRotate = on; },
+  onQuality: () => { if (kit) kit.setTier((kit.tier + 1) % TIERS.length, { persist: true, reason: 'manual' }); },
+});
 
-window.addEventListener('pagehide', () => { interaction?.dispose(); starfield?.dispose(); cosmos?.dispose(); kit?.dispose(); music.dispose(); });
+// ---- Bảng chẩn đoán: thêm ?debug vào cuối link để xem FPS, mức chất lượng, tên GPU ----
+if (new URLSearchParams(window.location.search).has('debug')) {
+  const box = $('debug'); box.hidden = false;
+  window.setInterval(() => {
+    const s = kit?.stats();
+    box.textContent = [`GPU: ${gpu.renderer}${gpu.software ? ' (phần mềm!)' : ''}`, `Chế độ: ${mode}`,
+      s ? `Mức: ${TIERS[s.tier].name} | FPS ~${Math.round(s.fps)} | PR ${s.pixelRatio} | Bloom ${s.bloom ? 'bật' : 'tắt'} | Mất WebGL: ${s.contextLosses}` : 'Không có 3D'].join('\n');
+  }, 500);
+}
+
+// ---- Quay lại trang bằng nút Back / chuyển app (bfcache): đừng huỷ cảnh, chỉ tạm dừng rồi chạy lại ----
+window.addEventListener('pagehide', (e) => {
+  if (e.persisted) { kit?.stop(); return; }
+  interaction?.dispose(); starfield?.dispose(); cosmos?.dispose(); kit?.dispose(); music.dispose();
+});
+window.addEventListener('pageshow', (e) => { if (e.persisted && mode === '3d') { hideToast(); kit?.start(); } });
